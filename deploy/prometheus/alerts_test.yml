@@ -1,0 +1,171 @@
+# Юнит-тесты правил алертов для chaos-сценариев: promtool test rules /etc/prometheus/alerts_test.yml
+# (scripts/check_dashboards.py --promtool). Шаг рядов = scrape/evaluation interval = 5 с; «1x5 0x9» —
+# шесть значений 1 (0…25 с), затем десять значений 0 (30…75 с).
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 5s
+
+tests:
+  # Redis остановлен на 30…75 с: алерты горят со второй оценки подряд (через 5 с после первого нуля) и гаснут
+  # на первой же оценке после восстановления.
+  - interval: 5s
+    input_series:
+      - series: 'foresight_dependency_up{job="ingest",instance="10.0.0.5:8001",service="ingest",dependency="redis"}'
+        values: "1x5 0x9 1x6"
+      - series: 'foresight_dependency_outages_total{job="ingest",instance="10.0.0.5:8001",service="ingest",dependency="redis"}'
+        values: "0x5 1x15"
+      - series: 'foresight_bus_buffered{job="ingest",instance="10.0.0.5:8001",service="ingest"}'
+        values: "0x5 40+40x9 0x6"
+      - series: 'redis_up{job="redis-exporter",instance="redis-exporter:9121",service="redis-exporter"}'
+        values: "1x6 0x9 1x5"
+      - series: 'foresight_api_degraded{job="api",instance="10.0.0.4:8000",service="api"}'
+        values: "0x6 1x9 0x5"
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: DependencyDown
+        exp_alerts: []
+      - eval_time: 35s
+        alertname: DependencyDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: ingest
+              instance: 10.0.0.5:8001
+              service: ingest
+              dependency: redis
+            exp_annotations:
+              summary: "ingest: недоступна зависимость redis"
+              description: >-
+                Сервис ingest (10.0.0.5:8001) не может обратиться к redis и работает в режиме деградации:
+                копит данные в памяти или отдаёт последнее известное состояние.
+      - eval_time: 35s
+        alertname: BusBuffering
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: ingest
+              instance: 10.0.0.5:8001
+              service: ingest
+            exp_annotations:
+              summary: "ingest копит события в памяти: Redis недоступен"
+              description: >-
+                ingest 10.0.0.5:8001 держит события в памяти (в буфере: 80). После восстановления Redis
+                они будут дописаны в поток; при переполнении буфера старые вытесняются (DataLoss).
+      - eval_time: 40s
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: redis-exporter
+              instance: redis-exporter:9121
+              service: redis-exporter
+            exp_annotations:
+              summary: "Redis недоступен"
+              description: >-
+                redis_exporter не может подключиться к Redis (две проверки подряд): шина событий и горячее состояние ТС
+                недоступны, сервисы работают на внутренних буферах.
+      - eval_time: 40s
+        alertname: ApiDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: api
+              instance: 10.0.0.4:8000
+              service: api
+            exp_annotations:
+              summary: "api отдаёт последнее известное состояние"
+              description: "api 10.0.0.4:8000 не получает обновления из Redis; дашборд показывает индикатор деградации."
+      - eval_time: 80s
+        alertname: DependencyDown
+        exp_alerts: []
+      - eval_time: 80s
+        alertname: BusBuffering
+        exp_alerts: []
+      - eval_time: 85s
+        alertname: RedisDown
+        exp_alerts: []
+      - eval_time: 85s
+        alertname: ApiDegraded
+        exp_alerts: []
+
+  # Сразу после старта зависимость ещё не проверена (up = 0, сбоев 0): это не отказ.
+  - interval: 5s
+    input_series:
+      - series: 'foresight_dependency_up{job="api",instance="10.0.0.4:8000",service="api",dependency="postgres"}'
+        values: "0x12"
+      - series: 'foresight_dependency_outages_total{job="api",instance="10.0.0.4:8000",service="api",dependency="postgres"}'
+        values: "0x12"
+    alert_rule_test:
+      - eval_time: 60s
+        alertname: DependencyDown
+        exp_alerts: []
+
+  # PostgreSQL остановлен на 30…75 с: журнал predictor копится в памяти.
+  - interval: 5s
+    input_series:
+      - series: 'foresight_dependency_up{job="predictor",instance="10.0.0.9:8002",service="predictor",dependency="postgres"}'
+        values: "1x5 0x9 1x5"
+      - series: 'foresight_dependency_outages_total{job="predictor",instance="10.0.0.9:8002",service="predictor",dependency="postgres"}'
+        values: "0x5 1x14"
+      - series: 'foresight_db_buffered{job="predictor",instance="10.0.0.9:8002",service="predictor"}'
+        values: "0x5 1x9 0x5"
+      - series: 'pg_up{job="postgres-exporter",instance="postgres-exporter:9187",service="postgres-exporter"}'
+        values: "1x5 0x9 1x5"
+    alert_rule_test:
+      - eval_time: 35s
+        alertname: DbBuffering
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: predictor
+              instance: 10.0.0.9:8002
+              service: predictor
+            exp_annotations:
+              summary: "predictor копит записи журнала в памяти: PostgreSQL недоступен"
+              description: >-
+                predictor 10.0.0.9:8002 держит записи журнала в памяти (в буфере: 1). Они будут записаны
+                после восстановления PostgreSQL; при переполнении старые отбрасываются (DataLoss).
+      - eval_time: 35s
+        alertname: PostgresDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: postgres-exporter
+              instance: postgres-exporter:9187
+              service: postgres-exporter
+            exp_annotations:
+              summary: "PostgreSQL недоступен"
+              description: >-
+                postgres_exporter не может подключиться к PostgreSQL (две проверки подряд): запись журнала буферизуется
+                в памяти сервисов и будет дописана после восстановления.
+      - eval_time: 80s
+        alertname: DbBuffering
+        exp_alerts: []
+      - eval_time: 80s
+        alertname: PostgresDown
+        exp_alerts: []
+
+  # Контейнер predictor пропал из DNS: цели нет вовсе.
+  - interval: 5s
+    input_series:
+      - series: 'up{job="ingest",instance="10.0.0.5:8001",service="ingest"}'
+        values: "1x10"
+      - series: 'up{job="api",instance="10.0.0.4:8000",service="api"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 25s
+        alertname: ServiceMissing
+        exp_alerts: []
+      - eval_time: 30s
+        alertname: ServiceMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: predictor
+            exp_annotations:
+              summary: "Обязательный сервис predictor отсутствует в стеке"
+              description: >-
+                DNS compose-сети не возвращает ни одного контейнера predictor дольше 30 с:
+                контейнер остановлен или не запущен.

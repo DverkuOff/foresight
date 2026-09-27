@@ -1,0 +1,24 @@
+# Build context of ml/Dockerfile (BuildKit reads <Dockerfile>.dockerignore instead of the root .dockerignore):
+# the same as the root one, but the model versions of the repository (models/) go into this image.
+.git
+.venv
+.claude
+.ruff_cache
+.pytest_cache
+**/__pycache__
+**/*.pyc
+**/node_modules
+dataset
+docs
+data
+artifacts
+outputs
+dashboard
+deploy
+*.pdf
+*.tar
+*.csv
+*.parquet
+tests
+*.ipynb
+.env

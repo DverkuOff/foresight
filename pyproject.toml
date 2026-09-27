@@ -1,0 +1,69 @@
+[project]
+name = "foresight"
+version = "0.1.0"
+description = "Предиктор задержек городского транспорта за 10–15 минут (Хакатон Московского транспорта)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=2.2",
+    "pandas>=3.0",
+    "pyarrow>=21",
+]
+
+[project.optional-dependencies]
+ml = [
+    "catboost>=1.2.10",
+    "scikit-learn>=1.9",
+    "onnxruntime>=1.30",
+]
+# обучение GRU / Transformer и экспорт в ONNX (только сервер обучения; инференс работает без torch)
+train = [
+    "torch>=2.14",
+    "onnx>=1.23",
+    "onnxscript>=0.7",
+]
+backend = [
+    "fastapi>=0.141",
+    "uvicorn[standard]>=0.54",
+    "pydantic-settings>=2.10",
+    "prometheus-client>=0.26",
+    "redis>=8.1",
+    "asyncpg>=0.31",
+]
+
+[dependency-groups]
+dev = [
+    "fakeredis>=2.38",
+    "httpx>=0.28",
+    "pytest>=8",
+    "ruff>=0.16",
+]
+# сайт документации: make docs (Sphinx + справочник по коду + OpenAPI всех сервисов)
+docs = [
+    "sphinx>=8.2",
+    "furo>=2025.9.25",
+    "myst-parser>=4",
+    "linkify-it-py>=2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["shared", "ml", "backend", "replayer"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.format]
+# python snippets inside docs/*.md are illustrative (contract, report), not code to reformat
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "PD"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,306 @@
+# Foresight · правила алертов Prometheus (описание, пороги и chaos-демо — docs/observability.md).
+#
+# Скрейп и вычисление правил — каждые 5 с. Алерты chaos-сценариев (DependencyDown, RedisDown, PostgresDown,
+# BusBuffering, DbBuffering, ApiDegraded) требуют двух оценок подряд (for: 5s): firing через 10–25 с после отказа
+# (сервису нужно до 5 с, чтобы заметить отказ) и resolved через 5–15 с после восстановления. Остальные пороги и
+# for подобраны так, чтобы здоровый стек под нагрузкой (replayer x30) не давал ни одного алерта, а догоняющие
+# всплески после восстановления зависимостей не дёргали warning.
+# Проверка: promtool check config / check rules / test rules (scripts/check_dashboards.py --promtool).
+
+groups:
+  # ---------------------------------------------------------------------------------------------------------
+  - name: foresight-availability
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сервис {{ $labels.service }} не отдаёт метрики"
+          description: >-
+            Prometheus не может опросить {{ $labels.service }} ({{ $labels.instance }}) дольше 15 с:
+            процесс завис, упал или не слушает порт.
+
+      - alert: ServiceMissing
+        expr: absent(up{job="ingest"}) or absent(up{job="predictor"}) or absent(up{job="api"})
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Обязательный сервис {{ $labels.job }} отсутствует в стеке"
+          description: >-
+            DNS compose-сети не возвращает ни одного контейнера {{ $labels.job }} дольше 30 с:
+            контейнер остановлен или не запущен.
+
+      - alert: DependencyDown
+        # «unknown» сразу после старта сервиса тоже экспортируется как 0; счётчик сбоев отличает его от отказа
+        expr: |
+          foresight_dependency_up == 0
+          and on (job, instance, dependency)
+          foresight_dependency_outages_total > 0
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }}: недоступна зависимость {{ $labels.dependency }}"
+          description: >-
+            Сервис {{ $labels.service }} ({{ $labels.instance }}) не может обратиться к {{ $labels.dependency }}
+            и работает в режиме деградации: копит данные в памяти или отдаёт последнее известное состояние.
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis недоступен"
+          description: >-
+            redis_exporter не может подключиться к Redis (две проверки подряд): шина событий и горячее состояние ТС
+            недоступны, сервисы работают на внутренних буферах.
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL недоступен"
+          description: >-
+            postgres_exporter не может подключиться к PostgreSQL (две проверки подряд): запись журнала буферизуется
+            в памяти сервисов и будет дописана после восстановления.
+
+      - alert: NdtpNotListening
+        expr: foresight_ndtp_listening == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "ingest не принимает NDTP-соединения"
+          description: "NDTP-сервер {{ $labels.instance }} не слушает порт 9201 дольше 15 с."
+
+  # ---------------------------------------------------------------------------------------------------------
+  - name: foresight-ingest
+    rules:
+      - alert: NoTelemetry
+        expr: sum(increase(foresight_ndtp_realtime_packets_total[5m])) == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Нет телеметрии NDTP больше 5 минут"
+          description: >-
+            ingest не получил ни одного пакета за 5 минут: источник (replayer или эмулятор) не запущен
+            либо связь с ним потеряна. Дашборд показывает последнее известное состояние.
+
+      - alert: NoNavRecords
+        expr: |
+          sum(foresight_ndtp_connections_active) > 0
+          and
+          sum(increase(foresight_ndtp_nav_records_total[2m])) == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NDTP-соединения открыты, но навигационных записей нет"
+          description: >-
+            Открытых соединений: {{ $value }}, но за 2 минуты не пришло ни одной записи Nav00 —
+            устройства молчат или шлют пакеты без навигации.
+
+      - alert: CRCErrorSpike
+        expr: sum by (service, instance) (increase(foresight_ndtp_crc_errors_total[1m])) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "Всплеск ошибок CRC в NDTP"
+          description: >-
+            {{ $labels.instance }}: кадров с неверной CRC за минуту — {{ $value | printf "%.0f" }};
+            повреждённый канал или клиент шлёт мусор.
+
+      - alert: AbusiveClientDisconnected
+        expr: sum by (service, instance) (increase(foresight_ndtp_abusive_disconnects_total[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Анти-DoS: клиент отключён за превышение бюджета ошибок CRC"
+          description: >-
+            {{ $labels.instance }} закрыл соединения клиентов, превысивших бюджет битых кадров
+            (за последние 5 минут).
+
+      - alert: ReplayerLagging
+        expr: foresight_replayer_lag_seconds > 5 and on (job, instance) foresight_replayer_running == 1
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "replayer отстаёт от расписания"
+          description: >-
+            Старейший неотправленный пакет ждёт {{ $value | humanizeDuration }}: приёмник не успевает
+            или соединение с ingest потеряно.
+
+      - alert: ReplayerDisconnected
+        expr: foresight_replayer_connections_active == 0 and on (job, instance) foresight_replayer_running == 1
+        for: 15s
+        labels:
+          severity: warning
+        annotations:
+          summary: "replayer запущен, но не подключён к ingest"
+          description: "replayer {{ $labels.instance }} не держит ни одного NDTP-соединения дольше 15 с."
+
+  # ---------------------------------------------------------------------------------------------------------
+  - name: foresight-stream
+    rules:
+      - alert: ConsumerLagHigh
+        expr: max by (service) (foresight_consumer_lag) > 500
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Растёт лаг consumer group predictor"
+          description: >-
+            Недоставленных событий в потоке telemetry: {{ $value | printf "%.0f" }} дольше 30 с (цель ≈ 0) —
+            predictor не успевает, нужно больше реплик.
+
+      - alert: EventLatencyHigh
+        # окно 1m и for 2m: догоняющий всплеск после восстановления Redis (≤ 1 мин) не даёт алерта
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, le) (rate(foresight_predictor_event_latency_seconds_bucket[1m]))
+          ) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 задержки обработки события больше 1 с"
+          description: >-
+            p95 задержки «приём ingest → обработка predictor» = {{ $value | humanizeDuration }}
+            (цель < 1 с, ТЗ — < 1–2 с на поток ТС).
+
+      - alert: PredictorTickSlow
+        expr: max by (service, instance) (quantile_over_time(0.5, foresight_predictor_tick_duration_seconds[2m])) > 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Тик прогнозов дольше 1 с"
+          description: >-
+            Медианная длительность тика {{ $labels.instance }} = {{ $value | humanizeDuration }}:
+            прогнозы запаздывают (цель инференса batch < 100 мс).
+
+      - alert: PredictorErrors
+        expr: |
+          sum by (service, instance) (increase(foresight_predictor_tick_errors_total[5m])) > 0
+          or
+          sum by (service, instance) (increase(foresight_consumer_handler_errors_total[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ошибки обработки в predictor"
+          description: "{{ $labels.instance }}: упавшие тики или обработчики пачек событий за последние 5 минут."
+
+  # ---------------------------------------------------------------------------------------------------------
+  - name: foresight-degradation
+    rules:
+      - alert: BusBuffering
+        expr: foresight_bus_buffered > 0 and on (job, instance) foresight_dependency_up{dependency="redis"} == 0
+        for: 5s
+        labels:
+          severity: warning
+        annotations:
+          summary: "ingest копит события в памяти: Redis недоступен"
+          description: >-
+            ingest {{ $labels.instance }} держит события в памяти (в буфере: {{ $value | printf "%.0f" }}).
+            После восстановления Redis они будут дописаны в поток; при переполнении буфера старые вытесняются
+            (DataLoss).
+
+      - alert: DbBuffering
+        expr: foresight_db_buffered > 0 and on (job, instance) foresight_dependency_up{dependency="postgres"} == 0
+        for: 5s
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} копит записи журнала в памяти: PostgreSQL недоступен"
+          description: >-
+            {{ $labels.service }} {{ $labels.instance }} держит записи журнала в памяти
+            (в буфере: {{ $value | printf "%.0f" }}). Они будут записаны после восстановления PostgreSQL;
+            при переполнении старые отбрасываются (DataLoss).
+
+      - alert: ApiDegraded
+        expr: foresight_api_degraded == 1
+        for: 5s
+        labels:
+          severity: warning
+        annotations:
+          summary: "api отдаёт последнее известное состояние"
+          description: "api {{ $labels.instance }} не получает обновления из Redis; дашборд показывает индикатор деградации."
+
+      - alert: DataLoss
+        expr: |
+          sum by (service, instance) (increase(foresight_bus_evicted_total[5m])) > 0
+          or
+          sum by (service, instance) (increase(foresight_db_dropped_total[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }}: потеря данных при переполнении буфера"
+          description: >-
+            За 5 минут {{ $labels.instance }} вытеснил из буфера шины или отбросил записи БД
+            ({{ $value | printf "%.0f" }}): отказ зависимости длился дольше, чем вмещает буфер.
+
+      - alert: DbRowsRejected
+        expr: sum by (service, instance) (increase(foresight_db_rejected_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL отклоняет строки журнала"
+          description: "{{ $labels.service }} ({{ $labels.instance }}): строки отклонены как некорректные — ошибка в данных или схеме."
+
+  # ---------------------------------------------------------------------------------------------------------
+  # Контракт следующего блока (ml-service, онлайн-сверка): правила валидны, данных пока нет.
+  - name: foresight-ml-contract
+    rules:
+      - alert: MLInferenceSlow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, le) (rate(foresight_ml_request_duration_seconds_bucket{endpoint="/predict"}[1m]))
+          ) > 0.1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 инференса ml-service больше 100 мс"
+          description: "p95 POST /predict = {{ $value | humanizeDuration }} (цель batch < 100 мс, таймаут predictor 500 мс)."
+
+      - alert: MLFallbackActive
+        expr: |
+          sum by (service) (rate(foresight_predictions_total{source="fallback"}[1m]))
+          / sum by (service) (rate(foresight_predictions_total[1m])) > 0.5
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "predictor прогнозирует по fallback"
+          description: >-
+            Доля fallback-прогнозов {{ $value | humanizePercentage }}: ml-service недоступен или не укладывается
+            в таймаут, прогноз — последнее GPS-отклонение с коэффициентом.
+
+      - alert: OnlineAccuracyDegraded
+        expr: foresight_online_mae_seconds > foresight_online_baseline_mae_seconds
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Онлайн-MAE модели хуже baseline"
+          description: >-
+            MAE по закрытым прогнозам {{ $value | printf "%.1f" }} с дольше 10 минут выше baseline
+            «прогноз = cur_dev_s»: проверить версию модели и данные.
+
+      - alert: RetroactiveAlerts
+        expr: sum by (service) (increase(foresight_alerts_retroactive_total[15m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Алерт выдан задним числом"
+          description: >-
+            Алертов, выданных после фактического события, за 15 минут: {{ $value | printf "%.0f" }} —
+            нарушена честность горизонта (должно быть 0).

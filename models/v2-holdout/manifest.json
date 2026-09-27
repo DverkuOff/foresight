@@ -1,0 +1,350 @@
+{
+  "format": "foresight-model/1",
+  "version": "v2-holdout",
+  "created_at": "2026-09-26T19:58:57Z",
+  "git_commit": "6e63856",
+  "packed_commit": "c454ca0",
+  "model": "catboost_gru_ensemble",
+  "description": "CatBoost MAE (4 модели v1) + gru_reg_h64 по последовательности 20 мин (ONNX INT8), вес 0.45 по OOF; MultiQuantile P10/P50/P90 + CQR; p_late — CatBoost Logloss + stack; ожидаемая ошибка — CatBoost по OOF-ошибкам — HOLDOUT: все модели обучены только на train (test не видели); для онлайн-оценки на потоке test. Модель сабмита — v2 (train + test).",
+  "features": [
+    "hour",
+    "lead_s",
+    "cur_dev_s",
+    "dev_1",
+    "dev_2",
+    "dev_3",
+    "dev_med5",
+    "dev_slope",
+    "age_1",
+    "conf_age_1",
+    "n_pass_30m",
+    "n_skip_recent",
+    "own_rate",
+    "cur_minus_dev1",
+    "pos_delay",
+    "pos_dist",
+    "pos_u",
+    "pos_on_layover",
+    "cur_minus_pos",
+    "n_unconfirmed",
+    "cur_best",
+    "spd_60",
+    "spd_180",
+    "spd_300",
+    "spd_600",
+    "stopfrac_60",
+    "stopfrac_180",
+    "stopfrac_300",
+    "stopfrac_600",
+    "npts_60",
+    "npts_180",
+    "npts_300",
+    "npts_600",
+    "stop_dur",
+    "gps_age",
+    "max_gap_10m",
+    "dist_5m",
+    "dist_next_stop",
+    "dist_target",
+    "n_to_target",
+    "plan_to_target",
+    "run_plan_ahead",
+    "maxgap_ahead",
+    "layover_ahead",
+    "n_layover_ahead",
+    "has_layover",
+    "maxgap_anchor",
+    "tgt_gap_prev",
+    "tgt_gap_next",
+    "tgt_trip_pos",
+    "tgt_trip_left",
+    "phys",
+    "own_extra",
+    "phys_own"
+  ],
+  "features_version": "06699d49a9",
+  "sequence_version": "5e4f03fe9b",
+  "components": [
+    "catboost",
+    "gru"
+  ],
+  "precision": "int8",
+  "capabilities": [
+    "quantiles",
+    "p_late",
+    "factors",
+    "sequence"
+  ],
+  "late_threshold_s": 120.0,
+  "metrics": {
+    "cv_mae": 76.715817,
+    "cv_mae_global_weight": 76.030776,
+    "cv_mae_synth": 78.37304,
+    "cv_mae_catboost": 76.956265,
+    "cv_mae_seq": 77.750237,
+    "baseline_cur_dev_cv_mae": 86.837862,
+    "baseline_cur_dev_test_mae": 93.359773,
+    "baseline_zero_test_mae": 103.33711,
+    "interval_coverage_oof": 0.801052,
+    "p_late_brier_oof": 0.135336,
+    "p_late_ece_oof": 0.042579,
+    "p_late_brier_climatology_oof": 0.166098,
+    "test_mae": 75.598649,
+    "test_mae_without_sequences": 75.790899,
+    "interval_coverage_test": 0.858357,
+    "p_late_brier_test": 0.132203
+  },
+  "ensemble": {
+    "method": "weighted",
+    "weights": {
+      "catboost": 0.55,
+      "gru": 0.45
+    }
+  },
+  "intervals": {
+    "center": "pred",
+    "coverage_target": 0.8,
+    "cqr_offset_s": 85.7266,
+    "abs_error_k": 0.296419
+  },
+  "members": [
+    {
+      "name": "real_only_s1",
+      "component": "catboost",
+      "target": "delay",
+      "file": "cb_delay_0.cbm",
+      "base": null,
+      "synth_weight": 0.0,
+      "seed": 1
+    },
+    {
+      "name": "real_only_s2",
+      "component": "catboost",
+      "target": "delay",
+      "file": "cb_delay_1.cbm",
+      "base": null,
+      "synth_weight": 0.0,
+      "seed": 2
+    },
+    {
+      "name": "synth_w0.5_resid_cur_s1",
+      "component": "catboost",
+      "target": "delay",
+      "file": "cb_delay_2.cbm",
+      "base": "cur_dev_s",
+      "synth_weight": 0.5,
+      "seed": 1
+    },
+    {
+      "name": "synth_w0.5_resid_cur_s2",
+      "component": "catboost",
+      "target": "delay",
+      "file": "cb_delay_3.cbm",
+      "base": "cur_dev_s",
+      "synth_weight": 0.5,
+      "seed": 2
+    },
+    {
+      "name": "quantiles",
+      "component": "catboost",
+      "target": "quantiles",
+      "file": "cb_quantiles.cbm",
+      "base": "cur_dev_s",
+      "alphas": [
+        0.1,
+        0.5,
+        0.9
+      ],
+      "synth_weight": 0.5
+    },
+    {
+      "name": "p_late",
+      "component": "catboost",
+      "target": "p_late",
+      "file": "cb_late.cbm",
+      "threshold_s": 120.0,
+      "calibration": {
+        "method": "stack",
+        "a": 0.052522485544392275,
+        "c": 1.3583872057280715,
+        "b": -0.3810311851486993,
+        "pred_scale": 100.0
+      },
+      "synth_weight": 0.5
+    },
+    {
+      "name": "gru_reg_h64",
+      "component": "gru",
+      "target": "delay",
+      "file": "seq.int8.onnx",
+      "fp32_file": "seq.fp32.onnx",
+      "precision": "int8",
+      "base": "cur_dev_s",
+      "seeds": [
+        1,
+        2,
+        3
+      ],
+      "epochs": 4,
+      "config": {
+        "name": "gru_reg_h64",
+        "kind": "gru",
+        "hidden": 64,
+        "layers": 2,
+        "heads": 4,
+        "tab_hidden": 32,
+        "dropout": 0.3,
+        "lr": 0.001,
+        "weight_decay": 0.01,
+        "batch_size": 64,
+        "max_epochs": 30,
+        "synth_weight": 0.5,
+        "base": "cur_dev_s",
+        "target_scale": 100.0,
+        "seeds": [
+          1,
+          2,
+          3
+        ]
+      },
+      "sequence": {
+        "len": 80,
+        "step_s": 15.0,
+        "channels": [
+          "obs",
+          "speed",
+          "stopped",
+          "move",
+          "gps_age",
+          "has_dev",
+          "dev",
+          "dev_age",
+          "has_next",
+          "next_dist",
+          "next_late",
+          "next_layover"
+        ],
+        "version": "5e4f03fe9b"
+      }
+    }
+  ],
+  "train": {
+    "rows": 2449,
+    "dropped_synthetic_rows": 1985,
+    "holdout": true,
+    "base": "v2",
+    "note": "train only (ml.dataset.leak_mask removes synthetic copies of test/validate periods)"
+  },
+  "latency_cpu": {
+    "measured_at": "2026-09-26T10:25:36Z",
+    "host": "DESKTOP-BC2MS6E",
+    "cpus": 10,
+    "repeat": 30,
+    "precision": "int8",
+    "batches": {
+      "1": {
+        "predict": {
+          "p50_ms": 14.8,
+          "p95_ms": 24.44,
+          "max_ms": 25.15
+        },
+        "explain": {
+          "p50_ms": 29.0,
+          "p95_ms": 34.56,
+          "max_ms": 36.56
+        },
+        "predict_no_seq": {
+          "p50_ms": 11.05,
+          "p95_ms": 11.81,
+          "max_ms": 12.48
+        }
+      },
+      "10": {
+        "predict": {
+          "p50_ms": 16.47,
+          "p95_ms": 17.29,
+          "max_ms": 17.78
+        },
+        "explain": {
+          "p50_ms": 34.9,
+          "p95_ms": 44.74,
+          "max_ms": 47.06
+        },
+        "predict_no_seq": {
+          "p50_ms": 11.59,
+          "p95_ms": 12.55,
+          "max_ms": 26.42
+        }
+      },
+      "100": {
+        "predict": {
+          "p50_ms": 24.66,
+          "p95_ms": 27.66,
+          "max_ms": 33.8
+        },
+        "explain": {
+          "p50_ms": 99.86,
+          "p95_ms": 110.87,
+          "max_ms": 113.41
+        },
+        "predict_no_seq": {
+          "p50_ms": 12.23,
+          "p95_ms": 21.2,
+          "max_ms": 33.24
+        }
+      },
+      "1000": {
+        "predict": {
+          "p50_ms": 113.79,
+          "p95_ms": 122.05,
+          "max_ms": 127.75
+        },
+        "explain": {
+          "p50_ms": 161.27,
+          "p95_ms": 188.24,
+          "max_ms": 193.6
+        },
+        "predict_no_seq": {
+          "p50_ms": 19.67,
+          "p95_ms": 25.34,
+          "max_ms": 34.64
+        }
+      }
+    }
+  },
+  "packed_at": "2026-09-26T19:58:57Z",
+  "files": {
+    "cb_delay_0.cbm": {
+      "sha256": "a5ec59f7bdc8eb74a0a32332eac2b07c0a49e5ae01ca324a804c3fd6095959c9",
+      "bytes": 1126952
+    },
+    "cb_delay_1.cbm": {
+      "sha256": "2a3c072beafb203991637f397220f4990a500ea12ae0b853a1aae4d8c36001a3",
+      "bytes": 1125792
+    },
+    "cb_delay_2.cbm": {
+      "sha256": "f25c79a875c3b9bcd96cacfab69a3755ef4da745eef41d030264cd6abc064769",
+      "bytes": 1127056
+    },
+    "cb_delay_3.cbm": {
+      "sha256": "00b768b91c76972482d27b07f25a7aae6a9ed57687bb3c5dfb55389cdb1d1dd1",
+      "bytes": 1127200
+    },
+    "cb_quantiles.cbm": {
+      "sha256": "2a8030a15b4b8dc6b67e50f1d7eea610f475bbe751e48fd8b4135a11060bda9c",
+      "bytes": 2179616
+    },
+    "cb_late.cbm": {
+      "sha256": "4c824afd89abbf01526a5f1c59bd5561c951c58878dcfcbc54522385796fcf28",
+      "bytes": 1130280
+    },
+    "seq.int8.onnx": {
+      "sha256": "2fa05fc78316c862991dea5ba3904de6e8aa455e23dac38b4fac43360c09912c",
+      "bytes": 1602387
+    },
+    "seq.fp32.onnx": {
+      "sha256": "08fc200aa365b4d9c45777e240fa95fd2b4a60e23989a6e6c2d80aec1e3f1b6c",
+      "bytes": 314168
+    }
+  }
+}

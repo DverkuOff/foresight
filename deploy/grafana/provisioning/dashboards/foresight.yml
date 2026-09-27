@@ -1,0 +1,15 @@
+# Foresight · дашборды из репозитория (deploy/grafana/dashboards, генерируются build_dashboards.py).
+apiVersion: 1
+
+providers:
+  - name: foresight
+    orgId: 1
+    folder: Foresight
+    folderUid: foresight
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false       # источник истины — репозиторий; правки через UI не сохраняются
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,91 @@
+# Foresight · Prometheus: сбор метрик всех сервисов (контракт метрик — docs/observability.md).
+#
+# Сервисы приложения находятся через DNS compose-сети (dns_sd_configs, записи A по имени сервиса):
+#   * N реплик сервиса (docker compose up --scale predictor=3) обнаруживаются автоматически;
+#   * сервис, которого нет в стеке (replayer, ml-service до их появления), даёт 0 целей и не вызывает алертов;
+#   * имя без контейнеров Docker DNS пересылает во внешний DNS: ответ NXDOMAIN убирает цель (обязательные
+#     сервисы ловит ServiceMissing), а ошибка или таймаут сохраняет последние цели (их ловит ServiceDown по up == 0);
+#     для необязательных replayer и ml-service опрос DNS реже (15 с), чтобы не шуметь в логе ошибками резолва.
+# Метка `service` = имя compose-сервиса, `instance` = IP:порт контейнера (различает реплики).
+# Хранение 7 дней задаётся флагом --storage.tsdb.retention.time в docker-compose.yml.
+
+global:
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+  external_labels:
+    project: foresight
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  # ---- сервисы приложения (DNS SD) ------------------------------------------------------------------
+  - job_name: ingest
+    dns_sd_configs:
+      - names: [ingest]
+        type: A
+        port: 8001
+        refresh_interval: 5s
+    relabel_configs:
+      - target_label: service
+        replacement: ingest
+
+  - job_name: predictor
+    dns_sd_configs:
+      - names: [predictor]
+        type: A
+        port: 8002
+        refresh_interval: 5s
+    relabel_configs:
+      - target_label: service
+        replacement: predictor
+
+  - job_name: api
+    dns_sd_configs:
+      - names: [api]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+    relabel_configs:
+      - target_label: service
+        replacement: api
+
+  - job_name: replayer
+    dns_sd_configs:
+      - names: [replayer]
+        type: A
+        port: 8010
+        refresh_interval: 15s  # необязательный сервис: резолв отсутствующего имени медленный
+    relabel_configs:
+      - target_label: service
+        replacement: replayer
+
+  - job_name: ml-service
+    dns_sd_configs:
+      - names: [ml-service]
+        type: A
+        port: 8003
+        refresh_interval: 15s
+    relabel_configs:
+      - target_label: service
+        replacement: ml-service
+
+  # ---- экспортёры зависимостей и сам Prometheus (статические цели: их отсутствие — это сбой) -----------
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          service: redis-exporter
+
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          service: postgres-exporter
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: prometheus

@@ -1,0 +1,215 @@
+{
+  "format": "foresight-model/1",
+  "version": "v1",
+  "created_at": "2026-09-25T11:04:07Z",
+  "packed_at": "2026-09-25T15:03:36Z",
+  "git_commit": "1bb1499",
+  "packed_commit": "2db784f",
+  "model": "catboost_mae_ensemble",
+  "description": "CatBoost MAE: 2 варианта × 2 сида (реальные ТС; остаток к cur_dev_s), среднее",
+  "features": [
+    "hour",
+    "lead_s",
+    "cur_dev_s",
+    "dev_1",
+    "dev_2",
+    "dev_3",
+    "dev_med5",
+    "dev_slope",
+    "age_1",
+    "conf_age_1",
+    "n_pass_30m",
+    "n_skip_recent",
+    "own_rate",
+    "cur_minus_dev1",
+    "pos_delay",
+    "pos_dist",
+    "pos_u",
+    "pos_on_layover",
+    "cur_minus_pos",
+    "n_unconfirmed",
+    "cur_best",
+    "spd_60",
+    "spd_180",
+    "spd_300",
+    "spd_600",
+    "stopfrac_60",
+    "stopfrac_180",
+    "stopfrac_300",
+    "stopfrac_600",
+    "npts_60",
+    "npts_180",
+    "npts_300",
+    "npts_600",
+    "stop_dur",
+    "gps_age",
+    "max_gap_10m",
+    "dist_5m",
+    "dist_next_stop",
+    "dist_target",
+    "n_to_target",
+    "plan_to_target",
+    "run_plan_ahead",
+    "maxgap_ahead",
+    "layover_ahead",
+    "n_layover_ahead",
+    "has_layover",
+    "maxgap_anchor",
+    "tgt_gap_prev",
+    "tgt_gap_next",
+    "tgt_trip_pos",
+    "tgt_trip_left",
+    "phys",
+    "own_extra",
+    "phys_own"
+  ],
+  "features_version": "06699d49a9",
+  "components": [
+    "catboost"
+  ],
+  "precision": "fp32",
+  "capabilities": [
+    "factors"
+  ],
+  "late_threshold_s": 120.0,
+  "metrics": {
+    "cv_mae": 76.956265,
+    "cv_mae_synth": 79.37443,
+    "test_mae": 75.790899,
+    "baseline_cur_dev_cv_mae": 86.837862,
+    "baseline_cur_dev_test_mae": 93.359773,
+    "baseline_zero_test_mae": 103.33711,
+    "platform_score": 0.87636
+  },
+  "ensemble": {
+    "method": "mean"
+  },
+  "members": [
+    {
+      "name": "real_only_s1",
+      "component": "catboost",
+      "target": "delay",
+      "file": "model_v1_0.cbm",
+      "base": null,
+      "synth_weight": 0.0,
+      "seed": 1
+    },
+    {
+      "name": "real_only_s2",
+      "component": "catboost",
+      "target": "delay",
+      "file": "model_v1_1.cbm",
+      "base": null,
+      "synth_weight": 0.0,
+      "seed": 2
+    },
+    {
+      "name": "synth_w0.5_resid_cur_s1",
+      "component": "catboost",
+      "target": "delay",
+      "file": "model_v1_2.cbm",
+      "base": "cur_dev_s",
+      "synth_weight": 0.5,
+      "seed": 1
+    },
+    {
+      "name": "synth_w0.5_resid_cur_s2",
+      "component": "catboost",
+      "target": "delay",
+      "file": "model_v1_3.cbm",
+      "base": "cur_dev_s",
+      "synth_weight": 0.5,
+      "seed": 2
+    }
+  ],
+  "train": {
+    "rows": 2802,
+    "dropped_synthetic_rows": 1985,
+    "params": {
+      "loss_function": "MAE",
+      "iterations": 1000,
+      "learning_rate": 0.03,
+      "depth": 6,
+      "l2_leaf_reg": 5.0,
+      "random_seed": 42,
+      "verbose": false,
+      "thread_count": -1,
+      "allow_writing_files": false
+    },
+    "source_meta": "model_v1"
+  },
+  "files": {
+    "model_v1_0.cbm": {
+      "sha256": "a838c4a9d03bed65abe09c73e9192c8892a564286efd1c8d504cd8a3c85fbaa2",
+      "bytes": 1127808
+    },
+    "model_v1_1.cbm": {
+      "sha256": "90e373950a5d083aae1afbd28e37ac740641a46a26a6594282c684b98630af8a",
+      "bytes": 1127256
+    },
+    "model_v1_2.cbm": {
+      "sha256": "a9d554d544f58d6652c2f0ff5f5b1cdda7f163154b47c928a4f1f77bbf0c60df",
+      "bytes": 1126312
+    },
+    "model_v1_3.cbm": {
+      "sha256": "0a4ebb761aa26b9f06bedfd47b5ee991f58ba864c88e405484b18bf09ba2f39f",
+      "bytes": 1126512
+    }
+  },
+  "latency_cpu": {
+    "measured_at": "2026-09-25T15:06:33Z",
+    "host": "DESKTOP-BC2MS6E",
+    "cpus": 10,
+    "repeat": 20,
+    "batches": {
+      "1": {
+        "predict": {
+          "p50_ms": 6.88,
+          "p95_ms": 8.48,
+          "max_ms": 10.05
+        },
+        "explain": {
+          "p50_ms": 30.75,
+          "p95_ms": 31.98,
+          "max_ms": 32.28
+        }
+      },
+      "10": {
+        "predict": {
+          "p50_ms": 7.07,
+          "p95_ms": 9.0,
+          "max_ms": 9.18
+        },
+        "explain": {
+          "p50_ms": 31.7,
+          "p95_ms": 31.99,
+          "max_ms": 32.04
+        }
+      },
+      "100": {
+        "predict": {
+          "p50_ms": 7.05,
+          "p95_ms": 7.89,
+          "max_ms": 7.9
+        },
+        "explain": {
+          "p50_ms": 74.67,
+          "p95_ms": 74.93,
+          "max_ms": 74.95
+        }
+      },
+      "1000": {
+        "predict": {
+          "p50_ms": 11.34,
+          "p95_ms": 11.89,
+          "max_ms": 11.98
+        },
+        "explain": {
+          "p50_ms": 169.54,
+          "p95_ms": 242.03,
+          "max_ms": 253.22
+        }
+      }
+    }
+  }
+}

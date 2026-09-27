@@ -1,0 +1,338 @@
+# Foresight: `make demo` builds and starts the stack, waits until every service is healthy and starts the
+# replay (see Makefile and README «Быстрый старт»). Plain compose works too: `docker compose up -d --build`,
+# then `curl -X POST localhost:8010/replay/start` (or REPLAY_AUTOSTART=1 to start the replay with the stack).
+# Needs Docker Engine 25+ (healthcheck start_interval) and Compose 2.21+ (`up --wait --wait-timeout`).
+#
+# One image (foresight-backend) runs three services: ingest (NDTP 9201 + HTTP 8001), predictor (HTTP 8002)
+# and api (HTTP 8000, Swagger at /docs). Redis 8 is the bus and hot state, PostgreSQL 18 the journal.
+# ml-service (foresight-ml, HTTP 8003) serves the forecast model of models/ on CPU; the predictor asks it
+# once per tick and falls back to its own formula while it is down.
+# The replayer (foresight-replayer, API 8010) plays dataset/<split>/traffic.csv as real NDTP into ingest;
+# the official emulator (API 18080) is the second source (`make emulator`). One source at a time: the ingest
+# follows one stream clock.
+# The dashboard (foresight-dashboard, 8080) is the dispatcher's UI; Prometheus (9090) and Grafana (3000, under
+# /grafana/, also embedded in the dashboard) are the observability (docs/observability.md). Grafana needs
+# GF_SECURITY_ADMIN_PASSWORD in .env (`make up` creates .env with a random one; anonymous access is read-only).
+# Service settings are FORESIGHT_* variables (see backend/config.py). Host ports can be moved with
+# API_PORT, INGEST_PORT, PREDICTOR_PORT, ML_PORT, REPLAYER_PORT, NDTP_PORT, EMULATOR_PORT, DASHBOARD_PORT,
+# GRAFANA_PORT, PROMETHEUS_PORT (e.g. to run a second stack alongside, or 127.0.0.1:3000 to keep one local); DATASET_DIR points to the dataset if it is not ./dataset; SCHEDULE_SPLIT is the
+# plan schedule of the forecasts (the split the replayer plays; validate — schedule_plan.csv).
+name: foresight
+
+x-backend: &backend
+  image: foresight-backend:${FORESIGHT_IMAGE_TAG:-latest}
+  pull_policy: never  # local image, built once by the ingest service (a build per service would race)
+  restart: unless-stopped
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+
+x-backend-env: &backend-env
+  FORESIGHT_LOG_LEVEL: ${FORESIGHT_LOG_LEVEL:-info}
+  FORESIGHT_REDIS_URL: redis://redis:6379/0
+  FORESIGHT_DATABASE_URL: postgresql://foresight:${FORESIGHT_DB_PASSWORD:-foresight}@postgres:5432/foresight
+
+x-healthcheck: &healthcheck
+  interval: 5s
+  timeout: 3s
+  retries: 10
+  start_period: 15s
+  start_interval: 1s  # probe every second while starting: a dependent service starts as soon as this one is up
+
+services:
+  redis:
+    image: redis:8
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", ""]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "redis-cli", "ping"]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: foresight
+      POSTGRES_PASSWORD: ${FORESIGHT_DB_PASSWORD:-foresight}
+      POSTGRES_DB: foresight
+    volumes:
+      - postgres-data:/var/lib/postgresql  # postgres 18 keeps PGDATA in a versioned subdirectory
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "pg_isready -U foresight -d foresight"]
+    restart: unless-stopped
+
+  ingest:
+    <<: *backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "backend.ingest"]
+    environment:
+      <<: *backend-env
+      FORESIGHT_UNIT_MAP_DIR: /app/dataset
+      FORESIGHT_UNIT_MAP_SPLITS: ${FORESIGHT_UNIT_MAP_SPLITS:-test,train}
+    volumes:
+      - ${DATASET_DIR:-./dataset}:/app/dataset:ro  # unit_id -> tr_id from <split>/traffic.csv
+    ports:
+      - "${NDTP_PORT:-9201}:9201"      # NDTP over TCP
+      - "${INGEST_PORT:-8001}:8001"    # /health (503 if NDTP is down), /metrics, /api/ingest/stats
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"]
+
+  predictor:
+    <<: *backend
+    command: ["python", "-m", "backend.predictor"]
+    environment:
+      <<: *backend-env
+      FORESIGHT_CONSUMER_NAME: predictor-1  # stable across container re-creation (no dead consumers)
+      FORESIGHT_ML_URL: http://ml-service:8003
+      # 1: send the telemetry sequences to the GRU part of v2 (off: CatBoost part + P10–P90 + p_late; the GRU is
+      # 4 s worse in MAE on the stream, docs/online-validation.md)
+      FORESIGHT_ML_SEQUENCES: ${FORESIGHT_ML_SEQUENCES:-0}
+      # plan schedule of the forecasts (facts dropped on load): the split the replayer plays by default
+      FORESIGHT_SCHEDULE_SPLIT: ${SCHEDULE_SPLIT:-${REPLAY_SPLIT:-test}}
+      FORESIGHT_SCHEDULE_DIR: /app/dataset
+    volumes:
+      - ${DATASET_DIR:-./dataset}:/app/dataset:ro  # <split>/schedule.csv (validate: schedule_plan.csv)
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+        required: false  # without ml-service the predictor starts anyway and forecasts with the fallback
+    ports:
+      - "${PREDICTOR_PORT:-8002}:8002"  # /health, /metrics, /api/predictor/stats
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=2)"]
+
+  ml-service:
+    image: foresight-ml:${FORESIGHT_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: ml/Dockerfile  # CPU image: CatBoost + ONNX Runtime, no PyTorch; models/ baked in
+    pull_policy: never  # local image
+    command: ["python", "-m", "ml.service"]
+    environment:
+      FORESIGHT_LOG_LEVEL: ${FORESIGHT_LOG_LEVEL:-info}
+      FORESIGHT_DATABASE_URL: postgresql://foresight:${FORESIGHT_DB_PASSWORD:-foresight}@postgres:5432/foresight
+      # a version of models/ (latest: the newest). The demo replays the test day, and v1 / v2 were trained on
+      # train + test (the models of the submission): the stack serves v2-holdout — the same recipe trained on
+      # train only — so the online MAE of the stand is honest (docs/online-validation.md).
+      FORESIGHT_MODEL_VERSION: ${FORESIGHT_MODEL_VERSION:-v2-holdout}
+    ports:
+      - "${ML_PORT:-8003}:8003"  # POST /predict, /model/info, /model/reload, /health, /metrics, Swagger /docs
+    depends_on:
+      postgres:
+        condition: service_healthy  # the active version is registered in model_versions (retried if not yet)
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=2)"]
+      start_period: 60s  # loading and warming up the model
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    command: ["python", "-m", "backend.api"]
+    environment:
+      <<: *backend-env
+      FORESIGHT_PREDICTOR_URL: http://predictor:8002  # /metrics for /api/metrics/perf
+      FORESIGHT_ML_URL: http://ml-service:8003
+      FORESIGHT_REPLAYER_URL: http://replayer:8010  # /api/replay/* proxy
+      # the plan of the stringline: the same split as the predictor's
+      FORESIGHT_SCHEDULE_SPLIT: ${SCHEDULE_SPLIT:-${REPLAY_SPLIT:-test}}
+      FORESIGHT_SCHEDULE_DIR: /app/dataset
+    volumes:
+      - ${DATASET_DIR:-./dataset}:/app/dataset:ro
+    ports:
+      - "${API_PORT:-8000}:8000"  # REST, WebSocket /ws, Swagger /docs, /metrics
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+
+  replayer:
+    image: foresight-replayer:${FORESIGHT_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: replayer/Dockerfile
+    pull_policy: never  # local image
+    environment:
+      FORESIGHT_REPLAY_LOG_LEVEL: ${FORESIGHT_LOG_LEVEL:-info}
+      FORESIGHT_REPLAY_TARGET_HOST: ingest
+      FORESIGHT_REPLAY_TARGET_PORT: "9201"
+      FORESIGHT_REPLAY_EMULATOR_URL: http://emulator:18080  # mode "bridge": the replay goes through the emulator
+      # Idle by default (plain compose, `make up`). REPLAY_AUTOSTART=1 starts the replay with the REPLAY_*
+      # parameters below every time the container starts (after `docker compose restart replayer` or a host
+      # reboot too): `make demo` sets it, `make emulator` clears it (one source at a time).
+      FORESIGHT_REPLAY_AUTOSTART: ${REPLAY_AUTOSTART:-0}
+      FORESIGHT_REPLAY_SPLIT: ${REPLAY_SPLIT:-test}
+      FORESIGHT_REPLAY_SPEED: ${REPLAY_SPEED:-30}
+      FORESIGHT_REPLAY_START: "${REPLAY_START:-06:00}"
+      FORESIGHT_REPLAY_UNTIL: ${REPLAY_UNTIL:-}
+      FORESIGHT_REPLAY_UNITS: ${REPLAY_UNITS:-}
+      FORESIGHT_REPLAY_LOOP: ${REPLAY_LOOP:-1}
+      FORESIGHT_REPLAY_MODE: ${REPLAY_MODE:-ndtp}
+    volumes:
+      - ${DATASET_DIR:-./dataset}:/app/dataset:ro  # <split>/traffic.csv
+    ports:
+      - "${REPLAYER_PORT:-8010}:8010"  # control API: /replay/start|stop|speed|status, /health, /metrics, /docs
+    depends_on:
+      ingest:
+        condition: service_healthy  # the replay never starts before the NDTP receiver listens
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=2)"]
+    restart: unless-stopped
+
+  emulator:
+    image: ndtp-telemetry-emulator:1.0
+    ports:
+      - "${EMULATOR_PORT:-18080}:18080"  # emulator REST API: GET /api/cells, POST /api/config
+    depends_on:
+      ingest:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:18080/api/cells"]
+    restart: unless-stopped
+
+  dashboard:
+    image: foresight-dashboard:${FORESIGHT_IMAGE_TAG:-latest}
+    build: ./dashboard  # React SPA + nginx: static files, /api and /ws → api, /grafana/ → grafana
+    pull_policy: never  # local image
+    environment:
+      FORESIGHT_API_MODE: ${DASHBOARD_API_MODE:-live}  # mock: demo data without the backend
+      FORESIGHT_API_UPSTREAM: api:8000
+      FORESIGHT_GRAFANA_UPSTREAM: grafana:3000
+      # base map: the OpenFreeMap vector style (tinted to the UI) or, without it, raster OSM tiles;
+      # DASHBOARD_TILES_URL=none — no base map (a stand without internet: routes and vehicles stay)
+      FORESIGHT_TILES_URL: ${DASHBOARD_TILES_URL:-}
+      FORESIGHT_BASEMAP_STYLE: ${DASHBOARD_BASEMAP_STYLE:-}
+      # public stand: changes in the administration (thresholds, models, stream) need this password (user admin)
+      FORESIGHT_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:-}
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"  # the dispatcher dashboard
+    depends_on:
+      api:
+        condition: service_started  # the dashboard serves its files without the backend too
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+    restart: unless-stopped
+
+  # ---- observability: Prometheus, Grafana, exporters (docs/observability.md) -------------------------
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle          # POST /-/reload перечитывает конфигурацию и правила
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      redis-exporter:
+        condition: service_started
+      postgres-exporter:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      # `make up` / `make demo` create .env with a random password; without make: cp .env.example .env
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD is not set, run make up or copy .env.example to .env}
+      # served under /grafana/ (directly on :3000 and through the dashboard's proxy) and embeddable in it
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_NAME: Main Org.
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_ANONYMOUS_HIDE_VERSION: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_VIEWERS_CAN_EDIT: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/foresight-overview.json
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 5s
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"  # без скачивания плагинов при старте: стенд работает офлайн
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/grafana/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.92.0-alpine
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_EXPORTER_CHECK_STREAMS: foresight:telemetry  # длина потока, лаг и pending consumer group
+      # быстрый отказ: при остановленном Redis скрейп укладывается в scrape_timeout и отдаёт redis_up 0
+      REDIS_EXPORTER_CONNECTION_TIMEOUT: 2s
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9121/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    environment:
+      # connect_timeout: при остановленном PostgreSQL скрейп укладывается в scrape_timeout и отдаёт pg_up 0
+      DATA_SOURCE_URI: postgres:5432/foresight?sslmode=disable&connect_timeout=2
+      DATA_SOURCE_USER: foresight
+      DATA_SOURCE_PASS: ${FORESIGHT_DB_PASSWORD:-foresight}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9187/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
+  prometheus-data:
+  grafana-data:

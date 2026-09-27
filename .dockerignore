@@ -1,0 +1,22 @@
+# Keep the build context small: only sources and the lock go into images.
+.git
+.venv
+.claude
+.ruff_cache
+.pytest_cache
+**/__pycache__
+**/*.pyc
+**/node_modules
+dataset
+docs
+data
+models
+artifacts
+outputs
+*.pdf
+*.tar
+*.csv
+*.parquet
+tests
+*.ipynb
+.env

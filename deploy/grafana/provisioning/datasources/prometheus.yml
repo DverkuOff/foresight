@@ -1,0 +1,19 @@
+# Foresight · источник данных Grafana: Prometheus стека (uid фиксирован — на него ссылаются все дашборды).
+apiVersion: 1
+
+datasources:
+  - name: Foresight Prometheus
+    uid: foresight-prometheus
+    type: prometheus
+    access: proxy
+    orgId: 1
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s          # = scrape_interval: $__rate_interval не опускается ниже 4 скрейпов
+      httpMethod: POST
+      prometheusType: Prometheus
+      prometheusVersion: 3.15.0
+      manageAlerts: true        # правила Prometheus видны в Alerting и в панели «Alert list»
+      incrementalQuerying: false

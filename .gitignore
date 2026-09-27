@@ -1,0 +1,96 @@
+# --- Claude / AI-инструменты ---
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.ruflo/
+.claude-flow/
+.swarm/
+.hive-mind/
+memory/
+
+# --- Данные и артефакты ---
+data/
+*.csv
+*.parquet
+*.feather
+*.tar
+*.zip
+*.gz
+*.7z
+submission*.csv
+# исходный датасет хакатона коммитим целиком (так он попадает на сервер через хук)
+!dataset/**
+
+# --- Модели и эксперименты ---
+models/
+checkpoints/
+artifacts/
+outputs/
+runs/
+mlruns/
+wandb/
+lightning_logs/
+catboost_info/
+*.cbm
+*.pt
+*.pth
+*.onnx
+*.engine
+*.pkl
+*.joblib
+# версии моделей для жюри и образа ml-service — в репозитории (models/<version>/: manifest.json + файлы)
+!/models/
+!/models/**
+
+# --- Постановка ---
+*.pdf
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# --- Frontend ---
+node_modules/
+.next/
+.vite/
+*.tsbuildinfo
+
+# --- Документация (генерируется) ---
+docs/_build/
+
+# --- Секреты и окружение ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Логи ---
+logs/
+*.log
+
+# --- IDE / ОС ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# сайт документации (make docs)
+site/
+.sphinx-cache/
