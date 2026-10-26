@@ -1,7 +1,6 @@
 # Keep the build context small: only sources and the lock go into images.
 .git
 .venv
-.claude
 .ruff_cache
 .pytest_cache
 **/__pycache__

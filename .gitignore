@@ -1,13 +1,3 @@
-# --- Claude / AI-инструменты ---
-CLAUDE.md
-CLAUDE.local.md
-.claude/
-.ruflo/
-.claude-flow/
-.swarm/
-.hive-mind/
-memory/
-
 # --- Данные и артефакты ---
 data/
 *.csv

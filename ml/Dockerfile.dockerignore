@@ -2,7 +2,6 @@
 # the same as the root one, but the model versions of the repository (models/) go into this image.
 .git
 .venv
-.claude
 .ruff_cache
 .pytest_cache
 **/__pycache__
