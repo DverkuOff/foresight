@@ -1,0 +1,161 @@
+<!doctype html>
+<!--
+  Шапка README, 2048×768. Пересборка из корня репозитория (нужны Chrome, cwebp и шрифт Inter в системе):
+
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars \
+    --force-device-scale-factor=1 --window-size=2048,768 --allow-file-access-from-files \
+    --screenshot=hero.png "file://$PWD/media/src/hero.html"
+  cwebp -q 90 hero.png -o media/hero.webp
+
+  Скриншот справа: docs/screenshots/overview.jpeg (дашборд, «Оперативная обстановка»).
+  Цвета взяты из палитры дашборда (dashboard/src/theme.ts, styles.css): текст #0f1b2d, акцент #0ea5e9,
+  риск #22c55e / #f5b90b / #ef4444. Фон — тёмный вариант цвета текста дашборда.
+-->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Форсайт</title>
+<style>
+  @font-face { font-family: "InterH"; font-weight: 400; src: local("Inter Regular"), local("Inter-Regular"); }
+  @font-face { font-family: "InterH"; font-weight: 500; src: local("Inter Medium"), local("Inter-Medium"); }
+  @font-face { font-family: "InterH"; font-weight: 600; src: local("Inter SemiBold"), local("Inter-SemiBold"); }
+  @font-face { font-family: "InterH"; font-weight: 700; src: local("Inter Bold"), local("Inter-Bold"); }
+  @font-face { font-family: "InterH"; font-weight: 800; src: local("Inter ExtraBold"), local("Inter-ExtraBold"); }
+
+  :root {
+    --bg: #0a1626;
+    --bg-2: #0f2238;
+    --line: #1b2f48;
+    --fg: #f3f6fa;
+    --fg-2: #9fb0c4;
+    --accent: #0ea5e9;
+    --accent-2: #38bdf8;
+    --green: #22c55e;
+    --yellow: #f5b90b;
+    --red: #ef4444;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 2048px; height: 768px; overflow: hidden; }
+  body {
+    position: relative;
+    background:
+      radial-gradient(ellipse 900px 620px at 1420px 384px, rgba(14, 165, 233, .16), transparent 70%),
+      linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 100%);
+    font-family: "InterH", "Inter", sans-serif;
+    color: var(--fg);
+  }
+
+  /* Фон: график движения — горизонтали остановок и нитки рейсов, как на странице «График движения» */
+  .stringline { position: absolute; left: 0; top: 0; }
+
+  .eyebrow {
+    position: absolute;
+    left: 110px;
+    top: 150px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    color: var(--accent-2);
+  }
+  .title {
+    position: absolute;
+    left: 102px;
+    top: 186px;
+    font-size: 150px;
+    line-height: 1;
+    font-weight: 800;
+    letter-spacing: -4px;
+    color: var(--fg);
+  }
+  .lead {
+    position: absolute;
+    left: 110px;
+    top: 392px;
+    width: 720px;
+    font-size: 34px;
+    line-height: 1.38;
+    font-weight: 400;
+    color: var(--fg);
+    opacity: .94;
+  }
+  .foot {
+    position: absolute;
+    left: 110px;
+    top: 604px;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+  }
+  /* три состояния риска дашборда */
+  .bars { display: flex; gap: 10px; }
+  .bars i { display: block; width: 34px; height: 6px; border-radius: 3px; }
+  .bars i:nth-child(1) { background: var(--green); }
+  .bars i:nth-child(2) { background: var(--yellow); }
+  .bars i:nth-child(3) { background: var(--red); }
+  .foot p {
+    margin: 0;
+    font-size: 19px;
+    line-height: 1.45;
+    font-weight: 500;
+    color: var(--fg-2);
+  }
+
+  .card {
+    position: absolute;
+    left: 940px;
+    top: 78px;
+    width: 980px;
+    height: 613px;
+    border-radius: 18px;
+    background: #ffffff;
+    box-shadow: 0 34px 90px rgba(0, 0, 0, .55), 0 0 0 1px rgba(255, 255, 255, .5), 0 0 0 9px rgba(14, 165, 233, .10);
+    overflow: hidden;
+  }
+  .card img {
+    display: block;
+    width: 980px;
+    height: 613px;
+  }
+</style>
+</head>
+<body>
+  <svg class="stringline" width="2048" height="768" viewBox="0 0 2048 768" aria-hidden="true">
+    <g stroke="#16304d" stroke-width="1.5">
+      <line x1="0" y1="96" x2="2048" y2="96"/>
+      <line x1="0" y1="192" x2="2048" y2="192"/>
+      <line x1="0" y1="288" x2="2048" y2="288"/>
+      <line x1="0" y1="384" x2="2048" y2="384"/>
+      <line x1="0" y1="480" x2="2048" y2="480"/>
+      <line x1="0" y1="576" x2="2048" y2="576"/>
+      <line x1="0" y1="672" x2="2048" y2="672"/>
+    </g>
+    <!-- плановые нитки -->
+    <g fill="none" stroke="#1d3a5c" stroke-width="2" stroke-dasharray="8 10">
+      <path d="M860 800 L1440 -40"/>
+      <path d="M1180 800 L1760 -40"/>
+      <path d="M1800 800 L2380 -40"/>
+    </g>
+    <!-- фактические нитки: вторая отстаёт от плана -->
+    <g fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M860 800 L1000 576 L1036 576 L1310 192 L1440 -40" stroke="rgba(14,165,233,.28)"/>
+      <path d="M1180 800 L1300 610 L1360 576 L1520 384 L1600 352 L1700 192 L1800 -40" stroke="rgba(239,68,68,.30)"/>
+      <path d="M1800 800 L2000 480 L2380 -40" stroke="rgba(14,165,233,.28)"/>
+    </g>
+  </svg>
+
+  <div class="eyebrow">Прогноз задержек транспорта</div>
+  <div class="title">Форсайт</div>
+  <div class="lead">Видит сбой графика за 15 минут до того, как он случится</div>
+  <div class="foot">
+    <div class="bars"><i></i><i></i><i></i></div>
+    <p>Кейс «Предиктор изменений в графике движения<br>городского транспорта» · Хакатон Московского транспорта 2026</p>
+  </div>
+
+  <div class="card">
+    <img src="../../docs/screenshots/overview.jpeg" alt="">
+  </div>
+
+  <div style="position:absolute;left:1846px;top:12px;width:142px;height:142px;border-radius:50%;background:radial-gradient(circle at 32% 28%,#fff 0,#e3e8ef 35%,#a7b2c3 100%);box-shadow:0 8px 22px rgba(0,0,0,.5),inset 0 0 0 7px rgba(255,255,255,.35),inset 0 0 0 9px #8b98ac;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#0B1E4A"><div style="font-weight:800;font-size:64px;line-height:58px">2</div><div style="font-weight:700;font-size:17px;letter-spacing:3px;margin-top:4px">МЕСТО</div></div>
+</body>
+</html>
